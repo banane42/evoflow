@@ -1,62 +1,15 @@
 use std::collections::BinaryHeap;
 use crate::evonet::EvoNet;
+use super::crossover::{ParentSelectionStrategy, Strategies};
 
-pub struct EvoTrainer<'a> {
+pub struct EvoTrainer {
     population: Vec<EvoNet>,
-    params: TrainerParams<'a>
-}
-
-pub struct TrainerParams<'a> {
-    size: usize, 
-    architecture: &'a[i32], 
     fitness_fn: fn(&mut EvoNet) -> f64,
-    survival_percentile: f64,
-    mutation_frequency: f64,
+    survival_rate: f64,
     crossover_rate: f64,
-    prime_parent_rate: f64,
-}
-
-impl <'a> TrainerParams <'a> {
-    pub fn build(
-        population_size: usize,
-        architecture: &'a[i32],
-        fitness_function: fn(&mut EvoNet) -> f64,
-        survival_percentile: f64,
-        mutation_frequency: f64,
-        crossover_rate: f64,
-        prime_parent_rate: f64
-    ) -> Result<Self, &str> {
-
-        if population_size <= 1 {
-            return Err("population_size must be greater than 1");
-        }
-
-        if survival_percentile < 0.0 || survival_percentile > 1.0 {
-            return Err("survival_percentile out of bounds (0.0..=1.0)");
-        }
-
-        if mutation_frequency < 0.0 || mutation_frequency > 1.0 {
-            return Err("mutation_frequency out of bounds (0.0..=1.0)");
-        }
-
-        if crossover_rate < 0.0 || crossover_rate > 1.0 {
-            return Err("crossover_rate out of bounds (0.0..=1.0)");
-        }
-
-        if prime_parent_rate < 0.0 || prime_parent_rate > 1.0 {
-            return Err("prime_parent_rate out of bounds (0.0..=1.0)");
-        }
-
-        Ok(Self { 
-            size: population_size,
-            architecture, 
-            fitness_fn: fitness_function,
-            survival_percentile,
-            mutation_frequency,
-            crossover_rate,
-            prime_parent_rate
-        })
-    }
+    mutation_rate: f64,
+    crossover_strategies: Vec<Box<dyn ParentSelectionStrategy>>,
+    crossover_weight_sum: usize
 }
 
 #[derive(Debug)]
@@ -91,14 +44,46 @@ impl PartialEq for FitnessPair {
 
 impl Eq for FitnessPair {}
 
-impl <'a> EvoTrainer<'a> {
+impl EvoTrainer {
 
-    pub fn initialize(t_params: TrainerParams<'a>) -> Self {
-        let mut pop_vec = Vec::with_capacity(t_params.size);
-        Self::spawn_population(&mut pop_vec, t_params.architecture, t_params.fitness_fn);
+    pub fn initialize(
+        population_size: usize,
+        architecture: &[usize],
+        fitness_fn: fn(&mut EvoNet) -> f64,
+        survival_rate: f64,
+        crossover_rate: f64,
+        mutation_rate: f64,
+        strategies: Vec<Strategies>
+    ) -> Self {
+        let mut pop_vec = Vec::with_capacity(population_size);
+        Self::spawn_population(&mut pop_vec, architecture, fitness_fn);
+        
+        let mut parent_strats: Vec<Box<dyn ParentSelectionStrategy>> = Vec::with_capacity(strategies.len());
+        let crossover_weight_sum = strategies.iter().fold(0, |sum, s| {
+            sum + match s {
+                Strategies::Tournement(strat) => {
+                    parent_strats.push(Box::new(strat.clone()));
+                    sum + strat.get_weight()
+                },
+                Strategies::PrimeParent(strat) => {
+                    parent_strats.push(Box::new(strat.clone()));
+                    sum + strat.get_weight()
+                },
+                Strategies::Roulette(strat) => {
+                    parent_strats.push(Box::new(strat.clone()));
+                    sum + strat.get_weight()
+                }
+            }
+        });
+
         Self { 
             population: pop_vec,
-            params: t_params
+            fitness_fn,
+            survival_rate,
+            crossover_rate,
+            mutation_rate,
+            crossover_strategies: parent_strats,
+            crossover_weight_sum,
         }
     }
 
@@ -132,7 +117,7 @@ impl <'a> EvoTrainer<'a> {
     pub fn train(&mut self, generations: usize) {
         (0..generations).for_each(|_| {
             let mut pop_fitness = self.calculate_pop_fitness();
-            self.create_next_gen(&mut pop_fitness, self.params.survival_percentile);
+            self.create_next_gen(&mut pop_fitness, self.survival_rate);
             self.mutate_population();
         });
     }
@@ -140,7 +125,7 @@ impl <'a> EvoTrainer<'a> {
     pub fn calculate_pop_fitness(&mut self) -> Vec<FitnessPair> {
         let mut fitnesses: BinaryHeap<FitnessPair> = BinaryHeap::new();
         for (i, net) in self.population.iter_mut().enumerate() {
-            let ft_score = (self.params.fitness_fn)(net);
+            let ft_score = (self.fitness_fn)(net);
             net.set_fitness(ft_score);
             fitnesses.push(FitnessPair { fitness: ft_score, index: i })
         }
@@ -150,11 +135,33 @@ impl <'a> EvoTrainer<'a> {
 
     fn create_next_gen(&mut self, fitness_pairs: &mut Vec<FitnessPair>, survival_rate: f64) {
         let dead_pop: Vec<_> = fitness_pairs.drain(0..(fitness_pairs.len() as f64 * (1.0 - survival_rate)) as usize).collect();
-        let (crossover_pop, copy_pop) = dead_pop.split_at((dead_pop.len() as f64 * self.params.crossover_rate) as usize);
+        let (crossover_pop, copy_pop) = dead_pop.split_at((dead_pop.len() as f64 * self.crossover_rate) as usize);
+        self.crossover(fitness_pairs, crossover_pop);
 
-        // self.generate_from_rank_crossover(fitness_pairs, crossover_pop);
-        // self.generate_from_tournament_crossover(fitness_pairs, crossover_pop);
-        self.generate_from_copy(fitness_pairs, copy_pop);
+        todo!("Generate from copy");
+        // self.generate_from_copy(fitness_pairs, copy_pop);
+    }
+
+    fn crossover(&mut self, fitness_pairs: &mut Vec<FitnessPair>, crossover_pop: &[FitnessPair]) {
+        let mut i: usize = 0;
+        for strat in self.crossover_strategies.iter() {
+            let j = (((strat.get_weight() as f64) / (self.crossover_weight_sum as f64)) * crossover_pop.len() as f64) as usize;
+            let families = strat.create_offspring(
+                fitness_pairs, 
+                &crossover_pop[i..j]
+            );
+
+            for family in families.iter() {
+                self.population[family.child_index] = self.create_child(
+                    family.parent_a_index,
+                    family.parent_b_index, 
+                    family.parent_a_fitness,
+                    family.parent_b_fitness
+                );
+            }
+
+            i = j;
+        }
     }
 
     // fn generate_from_rank_crossover(&mut self, fitness_pairs: &Vec<FitnessPair>, crossover_pop: &[FitnessPair]) {
@@ -180,26 +187,26 @@ impl <'a> EvoTrainer<'a> {
     //     });
     // }
 
-    fn generate_from_copy(&mut self, fitness_pairs: &Vec<FitnessPair>, copy_pop: &[FitnessPair]) {
-        let prime_parent_count = (fitness_pairs.len() as f64 * self.params.prime_parent_rate).max(1.0) as usize;
-        let mut i: usize = 1;
+    // fn generate_from_copy(&mut self, fitness_pairs: &Vec<FitnessPair>, copy_pop: &[FitnessPair]) {
+    //     let prime_parent_count = (fitness_pairs.len() as f64 * self.params.prime_parent_rate).max(1.0) as usize;
+    //     let mut i: usize = 1;
         
-        // let pop_deviation = Self::calc_std_deviation(&fitness_pairs);
-        // let ratio = pop_deviation / self.params.std_deviation;
-        // let mut_variance = 1.0 - 1.0_f64.min(ratio);
-        let mut_variance = 0.0;
+    //     // let pop_deviation = Self::calc_std_deviation(&fitness_pairs);
+    //     // let ratio = pop_deviation / self.params.std_deviation;
+    //     // let mut_variance = 1.0 - 1.0_f64.min(ratio);
+    //     let mut_variance = 0.0;
 
-        copy_pop.iter().for_each(|pair| {
-            let parent = &fitness_pairs[fitness_pairs.len() - i];
-            i += 1;
-            if i >= prime_parent_count {
-                i = 1;
-            }
-            let mut child = self.population[parent.index].clone();
-            child.mutate(self.params.mutation_frequency + mut_variance);
-            self.population[pair.index] = child;
-        });
-    }
+    //     copy_pop.iter().for_each(|pair| {
+    //         let parent = &fitness_pairs[fitness_pairs.len() - i];
+    //         i += 1;
+    //         if i >= prime_parent_count {
+    //             i = 1;
+    //         }
+    //         let mut child = self.population[parent.index].clone();
+    //         child.mutate(self.params.mutation_frequency + mut_variance);
+    //         self.population[pair.index] = child;
+    //     });
+    // }
 
     // fn generate_from_tournament_crossover(&mut self, fitness_pairs: &Vec<FitnessPair>, crossover_pop: &[FitnessPair]) {
     //     let mut rng = rand::thread_rng();
@@ -237,7 +244,7 @@ impl <'a> EvoTrainer<'a> {
         
     // }
 
-    fn spawn_population(pop_vec: &mut Vec<EvoNet>, architecture: &[i32], fitness_fn: fn(&mut EvoNet) -> f64) {
+    fn spawn_population(pop_vec: &mut Vec<EvoNet>, architecture: &[usize], fitness_fn: fn(&mut EvoNet) -> f64) {
         (0..pop_vec.capacity()).for_each(|_| {
             let mut spawn = EvoNet::new(architecture);
             let spawn_fit = (fitness_fn)(&mut spawn);
@@ -248,11 +255,11 @@ impl <'a> EvoTrainer<'a> {
         })
     }
 
-    fn crossover(&self, parent_a_idx: usize, parent_b_idx: usize, p1_fitness: f64, p2_fitness: f64) -> EvoNet {
+    fn create_child(&self, parent_a_idx: usize, parent_b_idx: usize, p1_fitness: f64, p2_fitness: f64) -> EvoNet {
         let p_a = self.population.get(parent_a_idx).unwrap();
         let p_b = self.population.get(parent_b_idx).unwrap();
         let mut child = EvoNet::from_parents(p_a, p_b, p1_fitness, p2_fitness);
-        let c_fit = (self.params.fitness_fn)(&mut child);
+        let c_fit = (self.fitness_fn)(&mut child);
         child.set_fitness(c_fit);
         child
     }
@@ -264,7 +271,7 @@ impl <'a> EvoTrainer<'a> {
         // let mut_variance = 1.0 - 1.0_f64.min(ratio);
 
         self.population.iter_mut().for_each(|net| 
-            net.mutate(self.params.mutation_frequency)
+            net.mutate(self.mutation_rate)
         )
     }
 

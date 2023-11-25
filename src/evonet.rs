@@ -12,7 +12,7 @@ struct Layer {
 }
 
 impl Layer {
-    fn new(amount: i32, input: i32) -> Layer {
+    fn new(amount: usize, input: usize) -> Layer {
         let mut nl = Layer {v: vec![], y: vec![], w: Vec::new()};
         let mut v: Vec<f64>;
         for _ in 0..amount {
@@ -75,7 +75,7 @@ pub struct EvoNet {
 }
 
 impl EvoNet {
-    pub fn new(architecture: &[i32]) -> EvoNet {
+    pub fn new(architecture: &[usize]) -> EvoNet {
         let mut nn = EvoNet {
             layers: Vec::new(),
             act: ActivationContainer{ func: activators::tanh },

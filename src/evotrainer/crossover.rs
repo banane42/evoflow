@@ -2,6 +2,28 @@ use rand::{self, Rng};
 
 use crate::evotrainer::evotrainer::FitnessPair;
 
+#[derive(Clone)]
+pub enum Strategies {
+    /// (weight, rounds)
+    Tournement(TournamentStrategy),
+    /// (weight, prime_parent_rate)
+    /// prime_parent_rate mut be between 0.0 and 1.0
+    PrimeParent(PrimeParentStrategy),
+    /// (weight)
+    Roulette(RouletteStrategy)
+}
+
+impl PartialEq for Strategies {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Tournement(_), Self::Tournement(_)) => true,
+            (Self::PrimeParent(_), Self::PrimeParent(_)) => true,
+            (Self::Roulette(_), Self::Roulette(_)) => true,
+            _ => false,
+        }
+    }
+}
+
 pub trait ParentSelectionStrategy {
     /// Weight representing how much this strategy should be used
     /// in relation to other strategies being employed by the trainer
@@ -14,21 +36,22 @@ pub trait ParentSelectionStrategy {
 }
 
 pub struct CrossoverFamily {
-    child_index: usize,
-    parent_a_index: usize,
-    parent_b_index: usize,
-    parent_a_fitness: f64,
-    parent_b_fitness: f64
+    pub child_index: usize,
+    pub parent_a_index: usize,
+    pub parent_b_index: usize,
+    pub parent_a_fitness: f64,
+    pub parent_b_fitness: f64
 }
 
 /// Randomly selects parents from the set amount of rounds
 /// Picking the best out of two tournements to be parents 
-pub struct TournamentSelection {
-    weight: usize,
-    rounds: usize
+#[derive(Clone)]
+pub struct TournamentStrategy {
+    pub weight: usize,
+    pub rounds: usize
 }
 
-impl ParentSelectionStrategy for TournamentSelection {
+impl ParentSelectionStrategy for TournamentStrategy {
     fn get_weight(&self) -> usize {
         self.weight
     }
@@ -70,13 +93,14 @@ impl ParentSelectionStrategy for TournamentSelection {
     }
 }
 
-pub struct PrimeParentStrategy {
-    weight: usize,
-    rate: f64
-}
-
 /// Randomly selects from the top percent of parents 
 /// Top percent is defined by the rate variable
+#[derive(Clone)]
+pub struct PrimeParentStrategy {
+    pub weight: usize,
+    pub rate: f64
+}
+
 impl ParentSelectionStrategy for PrimeParentStrategy {
     fn get_weight(&self) -> usize {
         self.weight
@@ -112,8 +136,9 @@ impl ParentSelectionStrategy for PrimeParentStrategy {
 
 /// Randomly selects parents weighted by the fitness ratio of
 /// the parent compared to all other parents
+#[derive(Clone)]
 pub struct RouletteStrategy {
-    weight: usize
+    pub weight: usize
 }
 
 impl ParentSelectionStrategy for RouletteStrategy {

@@ -1,17 +1,29 @@
-use evoflow::{evotrainer::evotrainer::{TrainerParams, EvoTrainer}, evonet::EvoNet};
+use evoflow::{evotrainer::{trainer_builder::TrainerBuilder, crossover::{PrimeParentStrategy, Strategies}}, evonet::EvoNet};
 
 fn main() {
-    let params = TrainerParams::build(
-        1000, 
-        &[2, 2, 1],
-        xor_fit_fn,
-        0.60,
-        0.01,
-        1.0,
-        0.2
-    ).expect("Training params wrong");
+    // let params = TrainerParams::build(
+    //     1000, 
+    //     &[2, 2, 1],
+    //     xor_fit_fn,
+    //     0.60,
+    //     0.01,
+    //     1.0
+    // ).expect("Training params wrong");
 
-    let mut trainer = EvoTrainer::initialize(params);
+    // let mut trainer = TrainerBuilder::new()
+    //     .set_population_size(1000)
+    //     .build()
+    //     .unwrap_or_else(|e| panic!("{}", e));
+    let mut builder = TrainerBuilder::new();
+    builder.set_architecture(&[2, 2, 1]);
+    builder.set_population_size(1000);
+    builder.set_fitness_function(xor_fit_fn);
+    builder.add_parent_selection_strategy(Strategies::PrimeParent(PrimeParentStrategy {
+        weight: 1,
+        rate: 0.1,
+    }));
+
+    let mut trainer = builder.build().unwrap_or_else(|e| panic!("{}", e));
 
     loop {
         let mut input = String::new();
